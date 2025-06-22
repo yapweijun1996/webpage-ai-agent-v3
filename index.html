@@ -695,7 +695,8 @@
 							log(agent, JSON.stringify(data), null, {error:true});
 							let errMsg = data.error?.message || "OpenAI API Error";
 							log(agent, `ERROR: ${errMsg}`, null, {error:true});
-							statusBar.textContent = `Error from OpenAI: ${errMsg}`;
+							statusBar.textContent = `Error from OpenAI: ${errMsg}`; 
+                            // ` close here only, testing
 							throw new Error(errMsg);
 						}
 						let aiContent = data.choices[0].message.content.trim();
@@ -710,7 +711,27 @@
 					showSpinner(true);
 					try{
 						let messages=[
-							{role:"system", content:"You are the Visual Debug AI agent. Analyze the provided web page screenshot, errors, and HTML code. Suggest or directly fix visual bugs. Respond only with a JSON object: { \"status\": \"<done|continue|error>\", \"message\": \"...\", \"code\": \"<optional HTML>\" }. Use short notes in the `message` field for any remaining issues. Put the fixed HTML in the `code` field when modifications are needed."},
+							{role:"system", content:`
+You are a Visual Debug AI agent for web UI code.
+You will receive:
+- a screenshot of the UI,
+- the HTML/CSS/JS code,
+- the user's original goal/description,
+- and any runtime error logs.
+
+Your tasks:
+- Analyze the screenshot, code, and errors to identify visual (UI/layout/style) bugs.
+- Use common sense: Look for incomplete, cut-off, missing, or unreadable content, misaligned items, or anything that would seem unfinished or obviously wrong to a real user.
+- List what you see that doesn't match a professional, complete UI based on the user's goal.
+- Output only a valid JSON object:
+  {
+    "status": "<done|continue|error>",
+    "message": "<short summary of visual or common sense issues, or 'looks good'>",
+    "code": "<OPTIONAL: corrected HTML if needed>"
+  }
+No prose, no code blocks, just the raw JSON object.
+`
+                            },
 							{role:"user", content:[
 								{type:"image_url", image_url:{url:base64Image}},
 								{type:"text", text:`Goal: ${goalInput.value}\nErrors: ${errors||"None"}\n\nCode:\n${code}`}

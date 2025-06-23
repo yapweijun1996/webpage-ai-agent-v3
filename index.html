@@ -148,8 +148,9 @@
 				#horizontalDivider:hover { background: #1181e4; }
 				
 			</style>
-			<script src="https://cdn.jsdelivr.net/npm/dom-to-image-more@latest/dist/dom-to-image-more.min.js"></script>
 			<script src="https://cdn.jsdelivr.net/npm/idb-keyval@latest/dist/idb-keyval-iife.min.js"></script>
+			<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+			
 			
 			
 			
@@ -157,11 +158,19 @@
 		<body>
 			<header>
 				<b style="font-size:12px;">Auto-AI Web Agent</b>
-				<input id="openaiApiKey" type="password" placeholder="OpenAI API key (sk-...)" autocomplete="off" style="min-width:210px;" />
-				<input id="geminiApiKey" type="password" placeholder="Gemini API key (AIza...)" autocomplete="off" style="min-width:210px;" />
+				<input id="goalInput" list="goalOptions" type="text" autocomplete="new-password" placeholder="Describe your goal..." />
 				
-				<input id="goalInput" type="text" placeholder="Describe your goal (e.g. responsive gallery with dark mode, contact form...)" />
+				<datalist id="goalOptions">
+					<option value="Content card with liquid glass effect"></option>
+					<option value="Responsive photo gallery with dark mode"></option>
+					<option value="Simple portfolio with about section and contact form"></option>
+					<option value="Landing page with hero image and newsletter sign-up"></option>
+					<option value="Interactive product catalog with filters"></option>
+					<option value="Multi-step checkout form with validation"></option>
+				</datalist>
+				
 				<button id="runAI">Start Auto</button>
+				<button id="captureScreenshotBtn" title="Capture Screenshot">📸 Capture</button>
 				<button id="stopAI" style="background:#ad2331;display:none;">Stop</button>
 				<button id="settingsBtn" title="Settings" style="margin-left:6px;">⚙️</button>
 				<button id="helpBtn" title="Help" style="margin-left:6px;">❔</button>
@@ -191,6 +200,14 @@
 				<div class="row" style="justify-content:space-between;">
 					<b style="font-size:12px;">⚙️ Settings</b>
 					<button class="closeBtn">Close</button>
+				</div>
+				<div class="row">
+					<label for="openaiApiKey">OpenAI API Key</label>
+					<input id="openaiApiKey" type="password" placeholder="sk-..." autocomplete="off" style="min-width:210px;" />
+				</div>
+				<div class="row">
+					<label for="geminiApiKey">Gemini API Key</label>
+					<input id="geminiApiKey" type="password" placeholder="AIza..." autocomplete="off" style="min-width:210px;" />
 				</div>
 				<div class="row">
 					<label for="maxIterations">Max Iterations</label>
@@ -333,6 +350,10 @@
 				}
 				
 				function enforceStyleRestrictions(html) {
+					if (typeof html !== "string") {
+						console.warn("enforceStyleRestrictions: input is not a string", html);
+						return html;
+					}
 					return html
 					.replace(/position\s*:\s*fixed/gi, 'position:absolute')
 					.replace(/z-index\s*:\s*(\d+)/gi, (m, val) => {
@@ -380,6 +401,7 @@
 					preview.srcdoc = sanitizePreviewHtml(html);
 					
 					// 4. (Hidden preview for screenshots)
+					
 					const hiddenPreview = document.getElementById('hiddenPreview');
 					let hiddenIframe = hiddenPreview.querySelector('iframe');
 					if (!hiddenIframe) {
@@ -391,9 +413,12 @@
 						hiddenPreview.appendChild(hiddenIframe);
 					}
 					
-					hiddenIframe.contentDocument.open();
-					hiddenIframe.contentDocument.write(sanitizePreviewHtml(html));
-					hiddenIframe.contentDocument.close();
+					return new Promise(resolve => {
+						hiddenIframe.onload = () => resolve();
+						hiddenIframe.contentDocument.open();
+						hiddenIframe.contentDocument.write(sanitizePreviewHtml(html));
+						hiddenIframe.contentDocument.close();
+					});
 				}
 				
 				
@@ -508,6 +533,10 @@
 				});
 				
 				async function callMultiAgent(agentKey, input1, input2) {
+					if (stopped) {
+						throw new Error("Process stopped by user");
+					}
+					
 					const setting = agentSettings[agentKey] || {provider:'openai', model:'gpt-4.1-mini'};
 					if (setting.provider === "openai") {
 						let apiKey = openaiApiKeyInput.value.trim();
@@ -525,77 +554,106 @@
 				
 				
 				async function callGeminiAgent(apiKey, agent, model, input1, input2) {
-					let parts = [];
+					const maxRetries = 3;
+					let attempt = 0;
 					
-					if (agent === "Visual Debug" && input1 && input1.base64Image) {
-						parts.push({
-							inline_data: {
-								data: input1.base64Image.replace(/^data:image\/\w+;base64,/, ""),
-								mime_type: "image/png"
-							}
-						});
-						parts.push({
-							text: agentPrompt(agent, input1, input2)
-						});
-					} else {
-						parts.push({ text: agentPrompt(agent, input1, input2) });
-					}
-					
-					const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-					const requestBody = {
-						contents: [{ role: "user", parts }],
-						generationConfig: {
-							temperature: 0.9,
-							maxOutputTokens: 8008,
-							//responseMimeType: "text/plain"
-							responseMimeType: "application/json"
-						}
-					};
-					
-					const response = await fetch(url, {
-						method: "POST",
-						headers: { "Content-Type": "application/json" },
-						body: JSON.stringify(requestBody)
-					});
-					
-					if (!response.ok) {
-						const errorText = await response.text();
-						console.error('Gemini API HTTP error:', errorText);
-						throw new Error(`Gemini API HTTP error: ${response.status}`);
-					}
-					
-					const data = await response.json();
-					const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-					
-					if (!text) {
-						console.error('Empty response from Gemini:', data);
-						throw new Error("Empty Gemini response");
-					}
-					
-					let visual = text;
-					visual = cleanNewlines(visual);
-					
-					
-					if (typeof visual === "string") {
+					while (attempt < maxRetries) {
+						attempt++;
 						try {
-							visual = JSON.parse(stripJsonFences(visual));
-						} catch (e) {
-							console.warn("Gemini response not JSON:", visual);
-							visual = {
-								status: "continue",
-								message: "Gemini response was not valid JSON",
-								rawResponse: visual
+							let parts = [];
+							if (agent === "Visual Debug" && input1 && input1.base64Image) {
+								parts.push({
+									inline_data: {
+										data: input1.base64Image.replace(/^data:image\/\w+;base64,/, ""),
+										mime_type: "image/png"
+									}
+								});
+								parts.push({
+									text: agentPrompt(agent, input1, input2)
+								});
+							} else {
+								parts.push({ text: agentPrompt(agent, input1, input2) });
+							}
+							
+							const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+							const requestBody = {
+								contents: [{ role: "user", parts }],
+								generationConfig: {
+									temperature: 0.9,
+									maxOutputTokens: 8008,
+									thinkingConfig: {
+										thinkingBudget: -1,
+									},
+									responseMimeType: 'text/plain'  // keep as text/plain as before
+								}
 							};
+							
+							const response = await fetch(url, {
+								method: "POST",
+								headers: { "Content-Type": "application/json" },
+								body: JSON.stringify(requestBody)
+							});
+							
+							if (!response.ok) {
+								const errorText = await response.text();
+								console.error(`Gemini API HTTP error (attempt ${attempt}):`, errorText);
+								if (attempt >= maxRetries) {
+									throw new Error(`Gemini API HTTP error: ${response.status}`);
+								}
+								await new Promise(r => setTimeout(r, 1000 * attempt));
+								continue;
+							}
+							
+							// Gemini returns JSON response
+							const data = await response.json();
+							
+							// Extract raw text response
+							const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+							
+							if (!rawText) {
+								console.error(`Empty response from Gemini (attempt ${attempt}):`, data);
+								if (attempt >= maxRetries) {
+									throw new Error("Empty Gemini response");
+								}
+								await new Promise(r => setTimeout(r, 1000 * attempt));
+								continue;
+							}
+							
+							// Clean the response text from code fences, excessive newlines, etc.
+							const cleanedText = cleanNewlines(stripJsonFences(rawText));
+							
+							// For Visual Debug agent, try parse JSON strictly
+							if (agent === "Visual Debug") {
+								try {
+									const parsed = JSON.parse(cleanedText);
+									return parsed;
+								} catch (e) {
+									console.warn("Gemini Visual Debug response not valid JSON:", cleanedText);
+									return {
+										status: "continue",
+										message: "Gemini Visual Debug response was not valid JSON",
+										rawResponse: cleanedText
+									};
+								}
+							}
+							
+							// For other agents, try parse JSON if possible, else fallback to string
+							try {
+								const parsed = JSON.parse(cleanedText);
+								return parsed;
+							} catch {
+								return cleanedText;  // fallback to plain string response
+							}
+							
+						} catch (err) {
+							console.error(`callGeminiAgent error on attempt ${attempt}:`, err);
+							if (attempt >= maxRetries) throw err;
+							await new Promise(r => setTimeout(r, 1000 * attempt));
 						}
 					}
-					console.log("222 visual");
-					console.log(visual);
-					console.log(typeof visual);
-					
-					
-					
-					return visual;
 				}
+				
+				
 				
 				
 				
@@ -664,6 +722,11 @@
 					
 					let enhancedGoal = await callMultiAgent("PromptEnhancer", userGoal);
 					
+					console.log("enhancedGoal");
+					console.log(enhancedGoal);
+					if (typeof enhancedGoal === "object") {
+						enhancedGoal = JSON.stringify(enhancedGoal, null, 2);
+					}
 					
 					log("PromptEnhancer", "Enhanced Prompt:\n" + enhancedGoal);
 					
@@ -1026,11 +1089,13 @@
 					} finally { showSpinner(false); }
 				}
 				function stripCodeFences(aiText) {
+					if (typeof aiText !== 'string') return aiText;
 					return aiText.replace(/^\s*```html\s*/i, '')
 					.replace(/^\s*```\s*/i, '')
 					.replace(/```$/g, '')
 					.trim();
 				}
+				
 				
 				
 				
@@ -1097,9 +1162,9 @@
 					const hiddenIframe = hiddenPreview.querySelector('iframe');
 					if (!hiddenIframe) return null;
 					
-					// Wait until content is fully loaded
+					// 等待 iframe 内容加载完成
 					await new Promise(resolve => {
-						let doc = hiddenIframe.contentDocument;
+						const doc = hiddenIframe.contentDocument;
 						if (doc && doc.readyState === 'complete') {
 							resolve();
 						} else {
@@ -1110,35 +1175,35 @@
 					const doc = hiddenIframe.contentDocument;
 					if (!doc || !doc.body) return null;
 					
-					// Wait for fonts
+					// 等待字体加载完成（可选）
 					if (doc.fonts && doc.fonts.ready) await doc.fonts.ready;
 					
-					// Convert images to base64 (your function)
+					// 转换图片为 Base64（你已有的函数）
 					await convertAllImagesToBase64(hiddenIframe);
 					
-					// Wait for all images to finish loading
+					// 确保所有图片加载完毕
 					const imgs = [...doc.images];
 					await Promise.all(imgs.map(img => new Promise(res => {
 						if (img.complete && img.naturalWidth !== 0) res();
 						else { img.onload = res; img.onerror = res; }
 					})));
 					
-					// Debug: Check rendered HTML
-					console.log('Iframe HTML for screenshot:', doc.body.innerHTML);
-					
-					// Extra delay for stability
+					// 额外等待确保渲染稳定
 					await new Promise(res => setTimeout(res, 80));
 					
 					try {
-						return await window.domtoimage.toPng(doc.body, {
-							bgcolor: "#fff",
-							cacheBust: true
+						// 用 html2canvas 截取 iframe 的 body
+						const canvas = await html2canvas(doc.body, {
+							backgroundColor: null,   // 保持透明背景，如果想白色改成 "#fff"
+							useCORS: true            // 尝试加载跨域图片（需要服务器支持）
 						});
+						return canvas.toDataURL("image/png");
 					} catch (err) {
-						console.error("Screenshot failed:", err);
+						console.error("html2canvas capture failed:", err);
 						return null;
 					}
 				}
+				
 				
 				
 				
@@ -1397,7 +1462,24 @@
 			
 			
 			
-			
+			document.getElementById('captureScreenshotBtn').addEventListener('click', async () => {
+				const screenshot = await captureIframeScreenshot();
+				if (screenshot) {
+					// Show in modal
+					screenshotModalImg.src = screenshot;
+					screenshotModal.style.display = 'flex';
+					
+					// Optionally: auto-download
+					/*
+					const link = document.createElement('a');
+					link.href = screenshot;
+					link.download = 'preview_screenshot.png';
+					link.click();
+					*/
+				} else {
+					alert("Failed to capture screenshot.");
+				}
+			});
 			
 			
 			

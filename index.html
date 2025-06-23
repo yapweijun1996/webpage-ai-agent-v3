@@ -1090,9 +1090,10 @@
 				}
 				function stripCodeFences(aiText) {
 					if (typeof aiText !== 'string') return aiText;
-					return aiText.replace(/^\s*```html\s*/i, '')
-					.replace(/^\s*```\s*/i, '')
-					.replace(/```$/g, '')
+					// 去除开头 ``` 或 ```html，结尾 ```，包括多行多层围栏
+					return aiText
+					.replace(/^\s*```(?:html)?\s*/i, '')   // 开头 ``` 或 ```html
+					.replace(/\s*```+\s*$/i, '')           // 结尾 ``` （可能多个）
 					.trim();
 				}
 				
